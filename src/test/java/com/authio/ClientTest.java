@@ -196,7 +196,7 @@ class ClientTest {
             MockServer.sequence(
                 new Response(
                     201,
-                    "{\"link\":\"https://admin-portal.authio.com/setup/abc\","
+                    "{\"link\":\"https://portal.authio.com/setup/abc\","
                         + "\"expires_at\":\"2026-06-11T00:05:00Z\"}")))) {
       Authio a = client(s);
       PortalLink link =
