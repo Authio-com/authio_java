@@ -54,8 +54,12 @@ public final class JwtVerifier {
 
   /**
    * @param jwksUrl absolute URL of the JWKS document
-   * @param issuer required {@code iss}; when null, issuer is not enforced
-   * @param audience required {@code aud}; when null, audience is not enforced
+   * @param issuer required {@code iss}; when null, issuer is not enforced.
+   *     {@link AuthioOptions} now defaults this to
+   *     {@link AuthioOptions#DEFAULT_ISSUER} so callers going through the
+   *     client always get it enforced.
+   * @param audience required {@code aud}; when null, audience is not enforced.
+   *     Defaulted the same way.
    */
   public JwtVerifier(String jwksUrl, String issuer, String audience) {
     this(jwksUrl, issuer, audience, null);
@@ -69,6 +73,7 @@ public final class JwtVerifier {
     this.jwksUrl = jwksUrl;
     this.issuer = issuer;
     this.audience = audience;
+    this.projectId = projectId;
     this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
   }
 
