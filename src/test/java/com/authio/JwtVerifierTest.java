@@ -59,6 +59,8 @@ class JwtVerifierTest {
       long exp = (System.currentTimeMillis() / 1000L) + 3600;
       String claims =
           "{\"sub\":\"user_1\",\"sid\":\"sess_1\",\"act_org\":\"org_1\",\"act_role\":\"admin\","
+              + "\"iss\":\"" + AuthioOptions.DEFAULT_ISSUER + "\",\"aud\":\""
+              + AuthioOptions.DEFAULT_AUDIENCE + "\","
               + "\"exp\":" + exp + ",\"plan\":\"pro\"}";
       String token = signJwt(kp.getPrivate(), kid, claims);
 
@@ -81,7 +83,7 @@ class JwtVerifierTest {
     try (MockServer s = new MockServer(MockServer.sequence(new Response(200, jwks(kp, kid))))) {
       Authio a = Authio.builder("sk_test").apiUrl(s.baseUrl()).authCoreUrl(s.baseUrl()).buildClient();
       long exp = (System.currentTimeMillis() / 1000L) + 3600;
-      String token = signJwt(kp.getPrivate(), kid, "{\"sub\":\"user_1\",\"exp\":" + exp + "}");
+      String token = signJwt(kp.getPrivate(), kid, defaultClaims(exp));
       String tampered = token.substring(0, token.length() - 4) + "AAAA";
       assertNull(a.sessions.verify(tampered));
     }
@@ -94,7 +96,7 @@ class JwtVerifierTest {
     try (MockServer s = new MockServer(MockServer.sequence(new Response(200, jwks(kp, kid))))) {
       Authio a = Authio.builder("sk_test").apiUrl(s.baseUrl()).authCoreUrl(s.baseUrl()).buildClient();
       long exp = (System.currentTimeMillis() / 1000L) - 3600;
-      String token = signJwt(kp.getPrivate(), kid, "{\"sub\":\"user_1\",\"exp\":" + exp + "}");
+      String token = signJwt(kp.getPrivate(), kid, defaultClaims(exp));
       assertNull(a.sessions.verify(token));
       // The throwing variant surfaces the typed error.
       AuthioError err = assertThrows(AuthioError.class, () -> a.sessions.verifyOrThrow(token));
@@ -127,6 +129,110 @@ class JwtVerifierTest {
               kid,
               "{\"sub\":\"u\",\"exp\":" + exp + ",\"iss\":\"https://api.authio.com\",\"aud\":\"authio\"}");
       assertNotNull(a.sessions.verify(ok));
+    }
+  }
+
+  /** Claims carrying the issuer/audience auth-core really stamps. */
+  private static String defaultClaims(long exp) {
+    return "{\"sub\":\"user_1\",\"iss\":\"" + AuthioOptions.DEFAULT_ISSUER
+        + "\",\"aud\":\"" + AuthioOptions.DEFAULT_AUDIENCE + "\",\"exp\":" + exp + "}";
+  }
+
+  // -------------------------------------------------------------------
+  // Security audit 2026-09-18. issuer/audience defaulted to null, and a
+  // null expected value means the check is skipped — so this SDK used to
+  // verify the signature and nothing else. Every tenant shares one
+  // signing key, so that accepted tokens from the whole platform.
+  // -------------------------------------------------------------------
+
+  @Test
+  void enforcesIssuerAndAudienceByDefault() throws Exception {
+    KeyPair kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+    String kid = "key-1";
+    try (MockServer s = new MockServer(MockServer.sequence(new Response(200, jwks(kp, kid))))) {
+      Authio a = Authio.builder("sk_test").apiUrl(s.baseUrl()).authCoreUrl(s.baseUrl()).buildClient();
+      long exp = (System.currentTimeMillis() / 1000L) + 3600;
+      String noIssNoAud =
+          signJwt(kp.getPrivate(), kid, "{\"sub\":\"u\",\"exp\":" + exp + "}");
+      assertNull(a.sessions.verify(noIssNoAud));
+    }
+  }
+
+  @Test
+  void rejectsTokenWithNoExpClaim() throws Exception {
+    KeyPair kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+    String kid = "key-1";
+    try (MockServer s = new MockServer(MockServer.sequence(new Response(200, jwks(kp, kid))))) {
+      Authio a = Authio.builder("sk_test").apiUrl(s.baseUrl()).authCoreUrl(s.baseUrl()).buildClient();
+      String noExp =
+          signJwt(
+              kp.getPrivate(),
+              kid,
+              "{\"sub\":\"u\",\"iss\":\"" + AuthioOptions.DEFAULT_ISSUER
+                  + "\",\"aud\":\"" + AuthioOptions.DEFAULT_AUDIENCE + "\"}");
+      assertNull(a.sessions.verify(noExp));
+    }
+  }
+
+  @Test
+  void rejectsTokenMintedInAnotherProject() throws Exception {
+    KeyPair kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+    String kid = "key-1";
+    try (MockServer s = new MockServer(MockServer.sequence(new Response(200, jwks(kp, kid))))) {
+      Authio a =
+          Authio.builder("sk_test")
+              .apiUrl(s.baseUrl())
+              .authCoreUrl(s.baseUrl())
+              .projectId("proj_victim")
+              .buildClient();
+      long exp = (System.currentTimeMillis() / 1000L) + 3600;
+      String foreign =
+          signJwt(
+              kp.getPrivate(),
+              kid,
+              "{\"sub\":\"u\",\"iss\":\"" + AuthioOptions.DEFAULT_ISSUER
+                  + "\",\"aud\":\"" + AuthioOptions.DEFAULT_AUDIENCE
+                  + "\",\"exp\":" + exp + ",\"project_id\":\"proj_attacker\"}");
+      assertNull(a.sessions.verify(foreign));
+    }
+  }
+
+  @Test
+  void acceptsTokenMintedForTheConfiguredProject() throws Exception {
+    KeyPair kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+    String kid = "key-1";
+    try (MockServer s = new MockServer(MockServer.sequence(new Response(200, jwks(kp, kid))))) {
+      Authio a =
+          Authio.builder("sk_test")
+              .apiUrl(s.baseUrl())
+              .authCoreUrl(s.baseUrl())
+              .projectId("proj_victim")
+              .buildClient();
+      long exp = (System.currentTimeMillis() / 1000L) + 3600;
+      String ours =
+          signJwt(
+              kp.getPrivate(),
+              kid,
+              "{\"sub\":\"u\",\"iss\":\"" + AuthioOptions.DEFAULT_ISSUER
+                  + "\",\"aud\":\"" + AuthioOptions.DEFAULT_AUDIENCE
+                  + "\",\"exp\":" + exp + ",\"project_id\":\"proj_victim\"}");
+      assertNotNull(a.sessions.verify(ours));
+    }
+  }
+
+  @Test
+  void rejectsTokenWithNoProjectIdWhenTenantConfigured() throws Exception {
+    KeyPair kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+    String kid = "key-1";
+    try (MockServer s = new MockServer(MockServer.sequence(new Response(200, jwks(kp, kid))))) {
+      Authio a =
+          Authio.builder("sk_test")
+              .apiUrl(s.baseUrl())
+              .authCoreUrl(s.baseUrl())
+              .projectId("proj_victim")
+              .buildClient();
+      long exp = (System.currentTimeMillis() / 1000L) + 3600;
+      assertNull(a.sessions.verify(signJwt(kp.getPrivate(), kid, defaultClaims(exp))));
     }
   }
 }
