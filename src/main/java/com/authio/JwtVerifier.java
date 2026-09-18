@@ -24,6 +24,7 @@ import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Verifies Authio access-token JWTs against the remote JWKS.
@@ -39,10 +40,13 @@ import java.util.Map;
 public final class JwtVerifier {
   private static final Duration CACHE_TTL = Duration.ofMinutes(10);
   private static final Duration REFETCH_COOLDOWN = Duration.ofSeconds(30);
+  private static final System.Logger LOG = System.getLogger(JwtVerifier.class.getName());
+  private static final AtomicBoolean WARNED_NO_PROJECT = new AtomicBoolean(false);
 
   private final String jwksUrl;
   private final String issuer;
   private final String audience;
+  private final String projectId;
   private final HttpClient http;
 
   private volatile JWKSet cached;
@@ -50,13 +54,26 @@ public final class JwtVerifier {
 
   /**
    * @param jwksUrl absolute URL of the JWKS document
-   * @param issuer required {@code iss}; when null, issuer is not enforced
-   * @param audience required {@code aud}; when null, audience is not enforced
+   * @param issuer required {@code iss}; when null, issuer is not enforced.
+   *     {@link AuthioOptions} now defaults this to
+   *     {@link AuthioOptions#DEFAULT_ISSUER} so callers going through the
+   *     client always get it enforced.
+   * @param audience required {@code aud}; when null, audience is not enforced.
+   *     Defaulted the same way.
    */
   public JwtVerifier(String jwksUrl, String issuer, String audience) {
+    this(jwksUrl, issuer, audience, null);
+  }
+
+  /**
+   * @param projectId tenant this verifier accepts tokens for; when null the
+   *     tenant check is skipped and a one-time warning is logged
+   */
+  public JwtVerifier(String jwksUrl, String issuer, String audience, String projectId) {
     this.jwksUrl = jwksUrl;
     this.issuer = issuer;
     this.audience = audience;
+    this.projectId = projectId;
     this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
   }
 
@@ -107,7 +124,12 @@ public final class JwtVerifier {
   private void validateTemporalAndScope(JWTClaimsSet claims) {
     Date now = new Date();
     Date exp = claims.getExpirationTime();
-    if (exp != null && now.after(new Date(exp.getTime() + 60_000L))) {
+    // exp is REQUIRED. It used to be checked only when present, so a
+    // token without it never expired.
+    if (exp == null) {
+      throw invalid("token has no exp claim", null);
+    }
+    if (now.after(new Date(exp.getTime() + 60_000L))) {
       throw invalid("token expired", null);
     }
     Date nbf = claims.getNotBeforeTime();
@@ -122,6 +144,37 @@ public final class JwtVerifier {
     }
     if (claims.getSubject() == null || claims.getSubject().isEmpty()) {
       throw invalid("missing sub claim", null);
+    }
+    assertTenant(claims);
+  }
+
+  /**
+   * Tenant binding (security audit 2026-09-18).
+   *
+   * <p>Signature, issuer and audience prove a token came from Authio, not that
+   * it was minted for THIS customer: auth-core signs every tenant with one
+   * platform key under one fixed issuer/audience, so {@code project_id} is the
+   * only claim that tells two tenants apart. Sign-up is self-serve, so anyone
+   * can create {@code ceo@your-company.com} in their own project and present
+   * the resulting token here.
+   *
+   * <p>With no project configured this warns once and stays permissive, so
+   * upgrading the dependency cannot sign anyone out on its own.
+   */
+  private void assertTenant(JWTClaimsSet claims) {
+    if (projectId == null || projectId.isEmpty()) {
+      if (WARNED_NO_PROJECT.compareAndSet(false, true)) {
+        LOG.log(
+            System.Logger.Level.WARNING,
+            "authio: no projectId configured, so tokens are not checked against your tenant."
+                + " Any Authio-issued token will verify here, including one minted in someone"
+                + " else's project. Set AUTHIO_PROJECT_ID or AuthioOptions.Builder#projectId.");
+      }
+      return;
+    }
+    Object claimed = claims.getClaim("project_id");
+    if (!projectId.equals(claimed)) {
+      throw invalid("token was issued for project " + claimed + ", not " + projectId, null);
     }
   }
 

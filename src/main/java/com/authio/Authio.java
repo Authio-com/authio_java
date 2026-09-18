@@ -43,7 +43,11 @@ public final class Authio {
     this.options = options;
     this.transport = new Transport(options);
     this.verifier =
-        new JwtVerifier(options.authCoreUrl + JWKS_PATH, options.jwtIssuer, options.jwtAudience);
+        new JwtVerifier(
+            options.authCoreUrl + JWKS_PATH,
+            options.jwtIssuer,
+            options.jwtAudience,
+            options.projectId);
     this.users = new UsersApi(transport);
     this.organizations = new OrganizationsApi(transport);
     this.memberships = new MembershipsApi(transport);
