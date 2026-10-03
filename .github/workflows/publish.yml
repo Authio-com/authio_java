@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,10 +26,17 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
-      - run: mvn -B verify
+      - run: mvn -B verify -Dgpg.skip=true
+      - name: Import signing key
+        if: env.OSSRH_USERNAME != ''
+        run: printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       - name: Deploy to Maven Central
         if: env.OSSRH_USERNAME != ''
-        run: mvn -B -DskipTests deploy
+        run: mvn -B -DskipTests -Dgpg.skip=false deploy --settings .mvn/settings.xml
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       - name: Skip deploy (no OSSRH secrets)
         if: env.OSSRH_USERNAME == ''
         run: echo "::notice::OSSRH credentials not set; skipping deploy."
