@@ -27,13 +27,26 @@ jobs:
           java-version: '17'
           cache: maven
       - run: mvn -B verify -Dgpg.skip=true
+      - name: Already on Central?
+        id: central
+        run: |
+          ver=$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)
+          art=$(mvn -q -DforceStdout help:evaluate -Dexpression=project.artifactId)
+          grp=$(mvn -q -DforceStdout help:evaluate -Dexpression=project.groupId | tr '.' '/')
+          code=$(curl -sS -o /dev/null -w "%{http_code}" "https://repo1.maven.org/maven2/${grp}/${art}/${ver}/${art}-${ver}.jar")
+          if [ "$code" = "200" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${grp}/${art}/${ver} is already on Maven Central; skipping deploy."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Import signing key
-        if: env.OSSRH_USERNAME != ''
+        if: env.OSSRH_USERNAME != '' && steps.central.outputs.published != 'true'
         run: printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       - name: Deploy to Maven Central
-        if: env.OSSRH_USERNAME != ''
+        if: env.OSSRH_USERNAME != '' && steps.central.outputs.published != 'true'
         run: mvn -B -DskipTests -Dgpg.skip=false deploy --settings .mvn/settings.xml
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
